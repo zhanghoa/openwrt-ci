@@ -3,17 +3,7 @@
 
 set -e   # 遇到错误立即退出，便于定位问题
 
-# 1. 删除原有 athena-led
-rm -rf package/emortal/luci-app-athena-led
-
-# 2. 克隆新版本
-git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/emortal/luci-app-athena-led
-
-# 3. 赋予执行权限
-chmod +x package/emortal/luci-app-athena-led/root/etc/init.d/athena_led
-chmod +x package/emortal/luci-app-athena-led/root/usr/sbin/athena-led
-
-# 4. 生成完整的防火墙配置文件（包含默认区域 + 自定义 WAN 访问规则）
+# 生成完整的防火墙配置文件（包含默认区域 + 自定义 WAN 访问规则）
 mkdir -p files/etc/config
 cat > files/etc/config/firewall << "EOF"
 config defaults
@@ -66,3 +56,7 @@ config rule
     option icmp_type 'echo-request'
     option target 'ACCEPT'
 EOF
+
+# 更新 feeds（确保其他包依赖正常）
+./scripts/feeds update -a
+./scripts/feeds install -a
