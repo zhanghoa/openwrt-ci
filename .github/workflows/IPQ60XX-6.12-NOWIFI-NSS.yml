@@ -134,6 +134,11 @@ jobs:
           echo "保持默认配置文件: $CONFIG_FILE"
         fi
 
+        # 提前初始化时间变量，防止跳过编译时丢日期
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+        echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
+
         cd openwrt
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
@@ -149,9 +154,8 @@ jobs:
       if: github.event.inputs.ssh == 'true'
       uses: mxschmitt/action-tmate@v3
 
-    # 应用配置和 DIY 脚本
+    # 应用配置和 DIY 脚本（无论编不编译，这一步必须执行以生成 .config）
     - name: 应用自定义配置并 DIY
-      if: github.event.inputs.skip_compile != 'true'
       run: |
         cd openwrt
         
@@ -195,8 +199,8 @@ jobs:
           fi
         fi
 
-    - name: 下载软件包源码（并更新 .config）
-      if: github.event.inputs.skip_compile != 'true'
+    # 展开依赖关系（无论编不编译，必须跑 make oldconfig 补全依赖）
+    - name: 整理并补全 .config 依赖
       run: |
         cd openwrt
         if [ ! -f .config ]; then
@@ -204,15 +208,20 @@ jobs:
           exit 1
         fi
         yes "" | make oldconfig
+
+    # 仅在需要编译时才去耗费时间下载源码包
+    - name: 下载软件包源码
+      if: github.event.inputs.skip_compile != 'true'
+      run: |
+        cd openwrt
         make download -j8
         find dl -name "*.badcheck" -delete
 
     - name: 验证 .config
-      if: github.event.inputs.skip_compile != 'true'
       run: |
         cd openwrt
         if ! grep -q '^CONFIG_TARGET_.*_DEVICE_.*=y' .config; then
-          echo "::error::make oldconfig 移除了设备配置，请检查配置文件兼容性。"
+          echo "::error::设备配置异常，请检查配置文件兼容性。"
           echo "--- 当前 .config 关键差异 ---"
           diff $GITHUB_WORKSPACE/$CONFIG_FILE .config || true
           exit 1
@@ -226,9 +235,6 @@ jobs:
         echo "使用 $(nproc) 线程编译..."
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
-        echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
 
     - name: 检查磁盘使用
       if: (!cancelled())
