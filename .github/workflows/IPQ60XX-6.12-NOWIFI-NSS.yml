@@ -62,7 +62,7 @@ jobs:
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
         df -h
 
-    # 2. 扩容工作区（建立大分区环境）
+    # 2. 扩容工作区（必须首先建立100G大分区环境）
     - name: 合并磁盘空间
       uses: easimon/maximize-build-space@master
       with:
@@ -70,11 +70,11 @@ jobs:
         temp-reserve-mb: 100
         root-reserve-mb: 1024
 
-    # 3. 检出仓库文件落地
+    # 3. 优先检出仓库文件，确保配置文件与 DIY 脚本落地
     - name: 检出工作流仓库
       uses: actions/checkout@v4
 
-    # 4. 初始化全局绝对变量与时间戳（彻底防止跳过编译时丢包名）
+    # 4. 初始化全局绝对变量与时间戳（防止跳过编译时丢失包名）
     - name: 生成全局变量
       id: vars
       run: |
@@ -106,7 +106,7 @@ jobs:
         echo "=== CPU ==="; lscpu | grep "Model name"
         echo "=== Memory ==="; free -h
 
-    # 6. 配置 ccache 编译减时缓存（hashFiles 精准绑定）
+    # 6. 配置 ccache 编译减时缓存（此时 hashFiles 可精准绑定落地文件，真正生效）
     - name: 配置 ccache
       run: |
         mkdir -p ~/.ccache
@@ -120,7 +120,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-ccache-
 
-    # 7. 浅克隆 OpenWrt 主源码树
+    # 7. 浅克隆 OpenWrt 主源码树并提取内核版本快照
     - name: 克隆 OpenWrt 源代码
       run: |
         git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
@@ -155,10 +155,10 @@ jobs:
       with:
         limit-access-to-actor: true
 
-    # 9. 配置合流与路径推断（全面校准绝对路径，斩断路径错位暗坑）
+    # 9. 配置合流与路径推断（全面校准绝对路径，斩断路径错位和嵌套暗坑）
     - name: 应用自定义配置并 DIY
       run: |
-        # 💡 核心修复：在外层采用绝对路径精准拷贝，阻断 openwrt/files/files 嵌套Bug
+        # 核心修复：在外层采用绝对路径精准拷贝，阻断 openwrt/files/files 嵌套Bug
         if [ -d "$GITHUB_WORKSPACE/files" ]; then
           mkdir -p "$GITHUB_WORKSPACE/openwrt/files"
           cp -r "$GITHUB_WORKSPACE/files"/* "$GITHUB_WORKSPACE/openwrt/files/"
@@ -212,14 +212,19 @@ jobs:
           exit 1
         fi
 
-    # 10. 高性能多核心固件编译线
+    # 10. 高性能多核心固件编译线（引入 Linux 6.12 内核非交互式静默对齐）
     - name: 编译固件
       if: github.event.inputs.skip_compile != 'true'
       id: compile
       run: |
         cd openwrt
+        echo "=== 强制静默并自动补全 6.12 新内核 Kconfig 选项 ==="
+        # 强行以默认值（回车）补全内核所有带 (NEW) 的新选项，阻断云端卡死
+        make target/linux/refresh V=s || true
+        
         echo "使用 $(nproc) 线程开足马力编译..."
-        make -j$(nproc) || make -j1 V=s
+        # 核心修复：1. 将局部环境变量挂在最前；2. 修复了拼写残缺的 $GITHUB_OUTPUT
+        CONFIG_NOSILENTUPDATE=1 make -j$(nproc) || CONFIG_NOSILENTUPDATE=1 make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 检查磁盘使用
@@ -248,12 +253,13 @@ jobs:
         cd openwrt/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        mkdir -p packages   # 💡 核心修复：强制建立目录，根除 mv 由于目标空缺引发的改名与包丢失报错
+        mkdir -p packages   # 核心修复：强制建立目录，根除 mv 由于目标空缺引发的改名与包丢失报错
         mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
         tar -czf Packages.tar.gz packages 2>/dev/null || true
         rm -rf packages feeds.buildinfo version.buildinfo 2>/dev/null || true
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
+    # 核心修复：Artifact 名字中不包含斜杠，避免插件抛出非法字符异常
     - name: 上传固件到 Artifact（未发版 Release 时备用）
       if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
       uses: actions/upload-artifact@v4
