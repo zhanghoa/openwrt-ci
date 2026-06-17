@@ -32,8 +32,6 @@ on:
         required: false
         default: 'false'
         type: boolean
-  schedule:
-    - cron: 0 19 * * *
 
 env:
   REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
@@ -124,16 +122,19 @@ jobs:
     - name: 生成变量（根据预设选择配置文件）
       id: vars
       run: |
-        if [ "${{ github.event.inputs.config_preset }}" == "custom" ]; then
-          CONFIG_FILE="${{ github.event.inputs.custom_config_name }}"
+        if [ -n "${{ github.event.inputs.config_preset }}" ]; then
+          if [ "${{ github.event.inputs.config_preset }}" == "custom" ]; then
+            LOCAL_CONFIG="${{ github.event.inputs.custom_config_name }}"
+          else
+            LOCAL_CONFIG="configs/${{ github.event.inputs.config_preset }}"
+          fi
+          echo "CONFIG_FILE=$LOCAL_CONFIG" >> $GITHUB_ENV
+          echo "使用手动选择的配置文件: $LOCAL_CONFIG"
         else
-          CONFIG_FILE="configs/${{ github.event.inputs.config_preset }}"
+          echo "保持默认配置文件: $CONFIG_FILE"
         fi
-        echo "CONFIG_FILE=$CONFIG_FILE" >> $GITHUB_ENV
-        echo "使用配置文件: $CONFIG_FILE"
 
         cd openwrt
-        # 预生成目标变量
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
 
@@ -143,7 +144,7 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    # ---- SSH 调试（参考 Redmi EA0326 工作流） ----
+    # ---- SSH 调试 ----
     - name: 设置 SSH 调试（可选）
       if: github.event.inputs.ssh == 'true'
       uses: mxschmitt/action-tmate@v3
@@ -175,19 +176,22 @@ jobs:
         # 启用 ccache
         echo "CONFIG_CCACHE=y" >> .config
         
-        # 推断目标子目录（用于后续上传）
+        # 推断目标子目录与安全的 Artifact 命名标识
         DEVICE_LINE=$(grep '^CONFIG_TARGET_.*_DEVICE_.*=y' .config || true)
         if [ -n "$DEVICE_LINE" ]; then
           TARGET_STR=$(echo "$DEVICE_LINE" | sed -r 's/CONFIG_TARGET_(.*)_DEVICE_.*/\1/')
           TARGET_SUBDIR=$(echo "$TARGET_STR" | tr '_' '/')
+          TARGET_NAME_STR=$(echo "$TARGET_STR" | tr '_' '-')
           echo "DEVICE_SUBDIR=$TARGET_SUBDIR" >> $GITHUB_ENV
+          echo "DEVICE_NAME_STR=$TARGET_NAME_STR" >> $GITHUB_ENV
         else
-          # 备用：直接检查目标
           if grep -q '^CONFIG_TARGET_ipq60xx=y' .config; then
             echo "DEVICE_SUBDIR=ipq60xx/generic" >> $GITHUB_ENV
+            echo "DEVICE_NAME_STR=ipq60xx-generic" >> $GITHUB_ENV
           else
             echo "::warning::无法推断目标子目录，将使用默认 ipq60xx/generic"
             echo "DEVICE_SUBDIR=ipq60xx/generic" >> $GITHUB_ENV
+            echo "DEVICE_NAME_STR=ipq60xx-generic" >> $GITHUB_ENV
           fi
         fi
 
@@ -203,7 +207,7 @@ jobs:
         make download -j8
         find dl -name "*.badcheck" -delete
 
-    - name: 验证 .config（防止 oldconfig 清掉设备选择）
+    - name: 验证 .config
       if: github.event.inputs.skip_compile != 'true'
       run: |
         cd openwrt
@@ -230,13 +234,14 @@ jobs:
       if: (!cancelled())
       run: df -hT
 
-    # ---- 上传 .config（如果选择） ----
+    # ---- 上传 .config ----
     - name: 上传 .config 文件
       if: github.event.inputs.upload_config == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.SOURCE_REPO }}-config-${{ env.FILE_DATE }}
         path: openwrt/.config
+        include-hidden-files: true
 
     - name: 上传 bin 目录（可选）
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
@@ -260,7 +265,7 @@ jobs:
       if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_SUBDIR }}-${{ env.FILE_DATE }}
+        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_NAME_STR }}-${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE_PATH }}
 
     - name: 上传固件到 Release
