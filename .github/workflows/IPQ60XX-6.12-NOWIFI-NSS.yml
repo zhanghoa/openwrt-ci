@@ -220,7 +220,7 @@ jobs:
         cd openwrt
         echo "=== 强制静默并自动补全 6.12 新内核 Kconfig 选项 ==="
         # 强行以默认值（回车）补全内核所有带 (NEW) 的新选项，阻断云端卡死
-        make target/linux/refresh V=s || true
+        make target/linux/olddefconfig V=s || true
         
         echo "使用 $(nproc) 线程开足马力编译..."
         # 核心修复：1. 将局部环境变量挂在最前；2. 修复了拼写残缺的 $GITHUB_OUTPUT
