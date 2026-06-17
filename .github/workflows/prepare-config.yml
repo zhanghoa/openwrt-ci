@@ -152,4 +152,5 @@ jobs:
       with:
         name: config-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ env.OPENWRT_PATH }}/.config   # ✅ 修正为绝对路径
+        include-hidden-files: true
         if-no-files-found: error
