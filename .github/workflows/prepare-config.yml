@@ -31,7 +31,7 @@ on:
 env:
   REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
   REPO_BRANCH: main-nss
-  DIY_SCRIPT: libwrt.sh          # 可选，如果仓库有 DIY 脚本会执行
+  DIY_SCRIPT: libwrt.sh
   TZ: Asia/Shanghai
 
 jobs:
@@ -63,9 +63,8 @@ jobs:
     - name: 克隆 OpenWrt 源码
       run: |
         git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
-        echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
+        echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV   # 设置绝对路径变量
 
-    # ---- 关键改进：将配置文件复制到源码目录 ----
     - name: 复制配置文件到源码目录
       run: |
         echo "将工作流仓库中的 configs/ 目录复制到 openwrt/ 源码目录..."
@@ -103,14 +102,14 @@ jobs:
       if: github.event.inputs.ssh == 'true'
       uses: mxschmitt/action-tmate@v3
       with:
-        limit-access-to-actor: true   # 仅允许触发者访问
+        limit-access-to-actor: true
 
     # ---- 应用配置并生成 .config ----
     - name: 生成最终配置
       run: |
         cd openwrt
         
-        # 检查预设配置文件是否存在（现在位于 openwrt/configs/ 下）
+        # 复制预设配置文件（现在位于 openwrt/configs/ 下）
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "::error::找不到配置文件: $CONFIG_FILE"
           echo "当前 openwrt/configs/ 目录内容："
@@ -118,10 +117,7 @@ jobs:
           exit 1
         fi
         echo "✅ 找到配置文件: $CONFIG_FILE"
-        
-        # 复制预设配置文件
         cp $CONFIG_FILE .config
-        echo "✅ 已复制配置文件到 .config"
         
         # 如果有 DIY 脚本，执行它（可能修改 .config）
         if [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
@@ -149,11 +145,11 @@ jobs:
         echo "--- 前 10 行预览 ---"
         head -n 10 openwrt/.config
 
-    # ---- 上传 .config 到 Artifact ----
+    # ---- 上传 .config 到 Artifact（使用绝对路径） ----
     - name: 上传 .config 到 Artifact
       if: github.event.inputs.upload_config == 'true' || github.event.inputs.ssh == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: config-${{ github.run_id }}-${{ github.run_attempt }}
-        path: openwrt/.config
+        path: ${{ env.OPENWRT_PATH }}/.config   # ✅ 修正为绝对路径
         if-no-files-found: error
