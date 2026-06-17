@@ -3,8 +3,11 @@
 
 set -e   # 遇到错误立即退出，便于定位问题
 
-# 生成完整的防火墙配置文件（包含默认区域 + 自定义 WAN 访问规则）
+echo "🧱 开始写入自定义有线防火墙配置 (WAN侧放行 SSH/HTTP/HTTPS/Ping)..."
+
+# 确保在 openwrt/ 源码树根目录下创建标准的 files 结构
 mkdir -p files/etc/config
+
 cat > files/etc/config/firewall << "EOF"
 config defaults
     option synflood_protect '1'
@@ -57,6 +60,4 @@ config rule
     option target 'ACCEPT'
 EOF
 
-# 更新 feeds（确保其他包依赖正常）
-./scripts/feeds update -a
-./scripts/feeds install -a
+echo "✅ 防火墙规则应用成功，跳过重复的 feeds 刷新，移交工作流下一步。"
