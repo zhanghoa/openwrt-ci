@@ -14,7 +14,7 @@ on:
           - ipq60xx-6.12-nowifi-nss-mini.config
           - custom (手动输入文件名)
       custom_config_name:
-        description: '当选择 "custom" 时，请输入配置文件路径（如 configs/my.config）'
+        description: '当选择 "custom" 时，请输入配置文件路径（相对于仓库根目录，如 configs/my.config）'
         required: false
         type: string
       ssh:
@@ -37,7 +37,7 @@ env:
 jobs:
   Prepare-Config:
     runs-on: ubuntu-latest
-    timeout-minutes: 30          # 配置准备很快，30分钟足够
+    timeout-minutes: 30
 
     steps:
     - name: 快速清理磁盘空间
@@ -57,7 +57,7 @@ jobs:
           xz-utils zlib1g-dev dos2unix libfuse-dev
         sudo timedatectl set-timezone "$TZ"
 
-    - name: 检出仓库（用于获取配置文件、DIY脚本等）
+    - name: 检出工作流仓库（用于获取配置文件、DIY脚本等）
       uses: actions/checkout@v4
 
     - name: 克隆 OpenWrt 源码
@@ -65,11 +65,19 @@ jobs:
         git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
         echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
 
+    # ---- 关键改进：将配置文件复制到源码目录 ----
+    - name: 复制配置文件到源码目录
+      run: |
+        echo "将工作流仓库中的 configs/ 目录复制到 openwrt/ 源码目录..."
+        mkdir -p openwrt/configs
+        cp -r $GITHUB_WORKSPACE/configs/* openwrt/configs/ 2>/dev/null || echo "没有找到 configs 目录或文件，跳过"
+        echo "✅ 配置文件已复制到 openwrt/configs/"
+
     - name: 缓存 dl 目录（加速下载）
       uses: actions/cache@v4
       with:
         path: openwrt/dl
-        key: ${{ runner.os }}-prepare-dl-${{ hashFiles('configs/*.config') }}
+        key: ${{ runner.os }}-prepare-dl-${{ hashFiles('openwrt/configs/*.config') }}
         restore-keys: |
           ${{ runner.os }}-prepare-dl-
 
@@ -94,29 +102,40 @@ jobs:
     - name: 设置 SSH 调试
       if: github.event.inputs.ssh == 'true'
       uses: mxschmitt/action-tmate@v3
+      with:
+        limit-access-to-actor: true   # 仅允许触发者访问
 
     # ---- 应用配置并生成 .config ----
     - name: 生成最终配置
       run: |
         cd openwrt
         
-        # 复制预设配置文件
+        # 检查预设配置文件是否存在（现在位于 openwrt/configs/ 下）
         if [ ! -f "$CONFIG_FILE" ]; then
           echo "::error::找不到配置文件: $CONFIG_FILE"
+          echo "当前 openwrt/configs/ 目录内容："
+          ls -la openwrt/configs/ || echo "目录为空"
           exit 1
         fi
+        echo "✅ 找到配置文件: $CONFIG_FILE"
+        
+        # 复制预设配置文件
         cp $CONFIG_FILE .config
+        echo "✅ 已复制配置文件到 .config"
         
         # 如果有 DIY 脚本，执行它（可能修改 .config）
         if [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
+          echo "执行 DIY 脚本: $DIY_SCRIPT"
           chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
           $GITHUB_WORKSPACE/$DIY_SCRIPT
         fi
         
         # 运行 defconfig 整理依赖关系
+        echo "运行 make defconfig 整理依赖..."
         yes "" | make defconfig
         
         # 下载软件包源码（确保后续编译时不需要网络，但这里仅下载）
+        echo "下载软件包源码..."
         make download -j8
         find dl -name "*.badcheck" -delete
 
@@ -127,11 +146,14 @@ jobs:
           exit 1
         fi
         echo "✅ .config 文件已生成，大小：$(du -h openwrt/.config | cut -f1)"
+        echo "--- 前 10 行预览 ---"
+        head -n 10 openwrt/.config
 
-    # ---- 上传 .config（始终执行） ----
+    # ---- 上传 .config 到 Artifact ----
     - name: 上传 .config 到 Artifact
+      if: github.event.inputs.upload_config == 'true' || github.event.inputs.ssh == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: config-${{ github.run_id }}-${{ github.run_attempt }}
         path: openwrt/.config
-        if-no-files-found: error   # 如果没找到文件则报错
+        if-no-files-found: error
