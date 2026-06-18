@@ -164,8 +164,6 @@ jobs:
         fi
         
         echo "CONFIG_CCACHE=y" >> .config
-        # 关键修复：为 qca-nss-ecm 提供缺失的内核函数
-        echo "CONFIG_KERNEL_NF_CONNTRACK_DSCPREMARK_EXT=y" >> .config
         
         DEVICE_LINE=$(grep '^CONFIG_TARGET_.*_DEVICE_.*=y' .config || true)
         if [ -n "$DEVICE_LINE" ]; then
@@ -206,45 +204,30 @@ jobs:
       run: |
         cd openwrt
         
-        echo "=== 修补内核平台配置（防交互 + 补全缺失选项） ==="
-        KERNEL_CONFIG_FILE="target/linux/qualcommax/config-6.12"
-        if [ ! -f "$KERNEL_CONFIG_FILE" ]; then
-          echo "未找到 $KERNEL_CONFIG_FILE，从通用配置复制"
-          mkdir -p "$(dirname "$KERNEL_CONFIG_FILE")"
-          cp target/linux/generic/config-6.12 "$KERNEL_CONFIG_FILE"
-        fi
+        echo "=== 终极内核参数穿透注入 ==="
+        # 加上 CONFIG_KERNEL_ 前缀，OpenWrt 会在编译时最高优先级强行覆写内核配置
+        {
+          echo "CONFIG_KERNEL_NETFILTER_INGRESS=y"
+          echo "CONFIG_KERNEL_NETFILTER_EGRESS=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK=m"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_HOOK=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_ACCT=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_QUEUE=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_LOG=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_OSF=n"
+          echo "CONFIG_KERNEL_NF_CONNTRACK=m"
+          echo "CONFIG_KERNEL_NF_LOG_SYSLOG=m"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_MARK=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_ZONES=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_PROCFS=n"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_EVENTS=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_TIMEOUT=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_DSCPREMARK_EXT=y"
+        } >> .config
         
-        # 100% 稳健的选项设置函数：绝不使用脆弱的正则扩展
-        set_kernel_opt() {
-          local opt="$1"; local val="$2"
-          sed -i "/^${opt}=/d" "$KERNEL_CONFIG_FILE"
-          sed -i "/^# ${opt} is not set/d" "$KERNEL_CONFIG_FILE"
-          echo "${opt}=${val}" >> "$KERNEL_CONFIG_FILE"
-        }
-        
-        set_kernel_opt CONFIG_NETFILTER_INGRESS y
-        set_kernel_opt CONFIG_NETFILTER_EGRESS n
-        set_kernel_opt CONFIG_NETFILTER_NETLINK m
-        set_kernel_opt CONFIG_NETFILTER_NETLINK_HOOK n
-        set_kernel_opt CONFIG_NETFILTER_NETLINK_ACCT n
-        set_kernel_opt CONFIG_NETFILTER_NETLINK_QUEUE n
-        set_kernel_opt CONFIG_NETFILTER_NETLINK_LOG n
-        set_kernel_opt CONFIG_NETFILTER_NETLINK_OSF n
-        set_kernel_opt CONFIG_NF_CONNTRACK m
-        set_kernel_opt CONFIG_NF_LOG_SYSLOG m
-        set_kernel_opt CONFIG_NF_CONNTRACK_MARK y
-        set_kernel_opt CONFIG_NF_CONNTRACK_ZONES y
-        set_kernel_opt CONFIG_NF_CONNTRACK_PROCFS n
-        set_kernel_opt CONFIG_NF_CONNTRACK_EVENTS y
-        set_kernel_opt CONFIG_NF_CONNTRACK_TIMEOUT y
-        set_kernel_opt CONFIG_NF_CONNTRACK_DSCPREMARK_EXT y
-        
-        echo "=== 刷新内核配置树 (真正的 OpenWrt 兜底安全网) ==="
-        yes "" | make kernel_oldconfig V=s || true
-        
-        echo "=== 内核配置修补完成，开始编译（启用 CONFIG_NOSILENTUPDATE） ==="
-        export CONFIG_NOSILENTUPDATE=1
-        make -j$(nproc) || make -j1 V=s
+        echo "=== 开始满载编译 ==="
+        # yes "" 作为安全网，自动为任何意外出现的 NEW 选项选择默认值
+        yes "" | make -j$(nproc) || yes "" | make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 检查磁盘使用
