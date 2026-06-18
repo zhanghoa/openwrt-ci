@@ -212,71 +212,53 @@ jobs:
           exit 1
         fi
 
-    # 10. 高性能多核心固件编译线（引入 Linux 6.12 内核非交互式静默对齐）
+    # 10. 编译固件（修补内核平台配置，彻底消除交互提示）
     - name: 编译固件
       if: github.event.inputs.skip_compile != 'true'
       id: compile
       run: |
         cd openwrt
         
-        # 1. 先让 OpenWrt 准备内核源码并生成初始配置（可能会失败，没关系）
-        make target/linux/olddefconfig V=s || echo "olddefconfig 失败，将手动修补内核配置"
+        echo "=== 修补内核平台配置文件（临时，不提交源码） ==="
+        KERNEL_CONFIG_FILE="target/linux/qualcommax/config-6.12"
         
-        # 2. 内核构建目录
-        KERNEL_BUILD_DIR="build_dir/target-aarch64_cortex-a53_musl/linux-qualcommax_ipq60xx/linux-6.12.93"
-        KERNEL_CONFIG="${KERNEL_BUILD_DIR}/.config"
-        
-        # 3. 如果内核 .config 不存在，先创建最小化配置
-        if [ ! -f "$KERNEL_CONFIG" ]; then
-          echo "创建初始内核 .config"
-          mkdir -p "$KERNEL_BUILD_DIR"
-          echo "CONFIG_ARM64=y" > "$KERNEL_CONFIG"
-          echo "CONFIG_ARCH_QUALCOMM=y" >> "$KERNEL_CONFIG"
+        # 如果文件不存在（例如平台首次适配），则从通用配置复制一份
+        if [ ! -f "$KERNEL_CONFIG_FILE" ]; then
+          echo "未找到 $KERNEL_CONFIG_FILE，从通用配置复制"
+          mkdir -p "$(dirname "$KERNEL_CONFIG_FILE")"
+          cp target/linux/generic/config-6.12 "$KERNEL_CONFIG_FILE"
         fi
         
-        # 4. 移除可能已存在的重复选项（防止冲突）
-        for opt in \
-          NETFILTER_INGRESS NETFILTER_EGRESS NETFILTER_NETLINK \
-          NETFILTER_NETLINK_HOOK NETFILTER_NETLINK_ACCT NETFILTER_NETLINK_QUEUE \
-          NETFILTER_NETLINK_LOG NETFILTER_NETLINK_OSF \
-          NF_CONNTRACK NF_LOG_SYSLOG NF_CONNTRACK_MARK NF_CONNTRACK_ZONES \
-          NF_CONNTRACK_PROCFS NF_CONNTRACK_EVENTS NF_CONNTRACK_TIMEOUT \
-          NF_CONNTRACK_DSCPREMARK_EXT
-        do
-          sed -i "/^CONFIG_${opt}=/d" "$KERNEL_CONFIG"
-        done
+        # 追加缺失的 Netfilter 选项（若未配置）
+        add_option() {
+          local opt="$1"
+          local val="$2"
+          if ! grep -q "^${opt}=" "$KERNEL_CONFIG_FILE"; then
+            echo "${opt}=${val}" >> "$KERNEL_CONFIG_FILE"
+            echo "添加 ${opt}=${val}"
+          else
+            echo "已存在 ${opt}，跳过"
+          fi
+        }
         
-        # 5. 写入缺失的 Netfilter 选项
-        {
-          echo "CONFIG_NETFILTER_INGRESS=y"
-          echo "CONFIG_NETFILTER_EGRESS=n"
-          echo "CONFIG_NETFILTER_NETLINK=m"
-          echo "CONFIG_NETFILTER_NETLINK_HOOK=n"
-          echo "CONFIG_NETFILTER_NETLINK_ACCT=n"
-          echo "CONFIG_NETFILTER_NETLINK_QUEUE=n"
-          echo "CONFIG_NETFILTER_NETLINK_LOG=n"
-          echo "CONFIG_NETFILTER_NETLINK_OSF=n"
-          echo "CONFIG_NF_CONNTRACK=m"
-          echo "CONFIG_NF_LOG_SYSLOG=m"
-          echo "CONFIG_NF_CONNTRACK_MARK=y"
-          echo "CONFIG_NF_CONNTRACK_ZONES=y"
-          echo "CONFIG_NF_CONNTRACK_PROCFS=n"
-          echo "CONFIG_NF_CONNTRACK_EVENTS=y"
-          echo "CONFIG_NF_CONNTRACK_TIMEOUT=y"
-          echo "CONFIG_NF_CONNTRACK_DSCPREMARK_EXT=n"
-        } >> "$KERNEL_CONFIG"
-        
-        # 6. 非交互补全内核配置（此时所有新选项已有值）
-        yes "" | make -C "$KERNEL_BUILD_DIR" olddefconfig ARCH=arm64
-        
-        # 7. 验证关键文件
-        if [ ! -f "${KERNEL_BUILD_DIR}/include/config/auto.conf.cmd" ]; then
-          echo "::error::内核 auto.conf.cmd 仍未生成，修补失败"
-          exit 1
-        fi
+        add_option CONFIG_NETFILTER_INGRESS y
+        add_option CONFIG_NETFILTER_EGRESS n
+        add_option CONFIG_NETFILTER_NETLINK m
+        add_option CONFIG_NETFILTER_NETLINK_HOOK n
+        add_option CONFIG_NETFILTER_NETLINK_ACCT n
+        add_option CONFIG_NETFILTER_NETLINK_QUEUE n
+        add_option CONFIG_NETFILTER_NETLINK_LOG n
+        add_option CONFIG_NETFILTER_NETLINK_OSF n
+        add_option CONFIG_NF_CONNTRACK m
+        add_option CONFIG_NF_LOG_SYSLOG m
+        add_option CONFIG_NF_CONNTRACK_MARK y
+        add_option CONFIG_NF_CONNTRACK_ZONES y
+        add_option CONFIG_NF_CONNTRACK_PROCFS n
+        add_option CONFIG_NF_CONNTRACK_EVENTS y
+        add_option CONFIG_NF_CONNTRACK_TIMEOUT y
+        add_option CONFIG_NF_CONNTRACK_DSCPREMARK_EXT n
         
         echo "=== 内核配置修补完成，开始编译 ==="
-        # 8. 编译
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
@@ -306,13 +288,12 @@ jobs:
         cd openwrt/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        mkdir -p packages   # 核心修复：强制建立目录，根除 mv 由于目标空缺引发的改名与包丢失报错
+        mkdir -p packages
         mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
         tar -czf Packages.tar.gz packages 2>/dev/null || true
         rm -rf packages feeds.buildinfo version.buildinfo 2>/dev/null || true
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
-    # 核心修复：Artifact 名字中不包含斜杠，避免插件抛出非法字符异常
     - name: 上传固件到 Artifact（未发版 Release 时备用）
       if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
       uses: actions/upload-artifact@v4
