@@ -1,38 +1,298 @@
-- name: 编译固件
-  if: github.event.inputs.skip_compile != 'true'
-  id: compile
-  run: |
-    cd openwrt
-    
-    echo "=== 穿透内核配置并精简体积 ==="
-    {
-      # --- 原有 Netfilter 补充选项 (解决内核交互报错) ---
-      echo "CONFIG_KERNEL_NETFILTER_INGRESS=y"
-      echo "CONFIG_KERNEL_NETFILTER_EGRESS=n"
-      echo "CONFIG_KERNEL_NETFILTER_NETLINK=m"
-      echo "CONFIG_KERNEL_NETFILTER_NETLINK_HOOK=n"
-      echo "CONFIG_KERNEL_NETFILTER_NETLINK_ACCT=n"
-      echo "CONFIG_KERNEL_NETFILTER_NETLINK_QUEUE=n"
-      echo "CONFIG_KERNEL_NETFILTER_NETLINK_LOG=n"
-      echo "CONFIG_KERNEL_NETFILTER_NETLINK_OSF=n"
-      echo "CONFIG_KERNEL_NF_CONNTRACK=m"
-      echo "CONFIG_KERNEL_NF_LOG_SYSLOG=m"
-      echo "CONFIG_KERNEL_NF_CONNTRACK_MARK=y"
-      echo "CONFIG_KERNEL_NF_CONNTRACK_ZONES=y"
-      echo "CONFIG_KERNEL_NF_CONNTRACK_PROCFS=n"
-      echo "CONFIG_KERNEL_NF_CONNTRACK_EVENTS=y"
-      echo "CONFIG_KERNEL_NF_CONNTRACK_TIMEOUT=y"
-      echo "CONFIG_KERNEL_NF_CONNTRACK_DSCPREMARK_EXT=y"
+name: IPQ60XX-6.12-NOWIFI-NSS
 
-      # --- 新增：关闭内核调试信息，立减 20~30 MB ---
-      echo "CONFIG_KERNEL_DEBUG_INFO=n"
-      echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n"
-      echo "CONFIG_KERNEL_DEBUG_KERNEL=n"
-      echo "CONFIG_KERNEL_DEBUG_FS=n"
-      echo "CONFIG_KERNEL_KALLSYMS=n"
-      echo "CONFIG_KERNEL_PERF_EVENTS=n"
-    } >> .config
-    
-    echo "=== 开始编译 ==="
-    yes "" | make -j$(nproc) || yes "" | make -j1 V=s
-    echo "status=success" >> $GITHUB_OUTPUT
+on:
+  workflow_dispatch:
+    inputs:
+      config_preset:
+        description: '选择预设配置（仓库 configs/ 目录下的文件）'
+        required: true
+        default: 'ipq60xx-6.12-nowifi-nss.config'
+        type: choice
+        options:
+          - ipq60xx-6.12-nowifi-nss.config
+          - custom (手动输入文件名)
+      custom_config_name:
+        description: '当选择 "custom" 时，请输入配置文件路径（如 configs/my.config）'
+        required: false
+        type: string
+      ssh:
+        description: '启用 SSH 调试（在 feeds 安装后，编译前进入）'
+        required: false
+        default: 'false'
+        type: boolean
+      upload_config:
+        description: '上传生成的 .config 文件到 Artifact'
+        required: false
+        default: 'false'
+        type: boolean
+      skip_compile:
+        description: '仅生成配置并上传，跳过实际编译'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
+  REPO_BRANCH: main-nss
+  CONFIG_FILE: configs/ipq60xx-6.12-nowifi-nss.config
+  DIY_SCRIPT: libwrt.sh
+  CLASH_KERNEL: amd64
+  CACHE_TOOLCHAIN: true
+  UPLOAD_BIN_DIR: false
+  FIRMWARE_RELEASE: true
+  FIRMWARE_TAG: IPQ60XX-6.12-NOWIFI-NSS
+  TZ: Asia/Shanghai
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    timeout-minutes: 360
+
+    steps:
+    - name: 深度清理与释放磁盘空间
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: true
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
+    - name: 检出工作流仓库
+      uses: actions/checkout@v4
+
+    - name: 生成全局变量
+      id: vars
+      run: |
+        if [ -n "${{ github.event.inputs.config_preset }}" ]; then
+          if [ "${{ github.event.inputs.config_preset }}" == "custom" ]; then
+            LOCAL_CONFIG="${{ github.event.inputs.custom_config_name }}"
+          else
+            LOCAL_CONFIG="configs/${{ github.event.inputs.config_preset }}"
+          fi
+          echo "CONFIG_FILE=$LOCAL_CONFIG" >> $GITHUB_ENV
+          echo "使用配置文件: $LOCAL_CONFIG"
+        fi
+
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+        echo "TAG_TIME=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_ENV
+
+    - name: 安装编译依赖
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
+          gettext git java-propose-classpath libelf-dev libncurses5-dev libncursesw5-dev \
+          libssl-dev python3-dev python3-pip rsync subversion sudo unzip wget \
+           xz-utils zlib1g-dev dos2unix libfuse-dev
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: 配置 ccache
+      run: |
+        mkdir -p ~/.ccache
+        echo "max_size = 10.0G" > ~/.ccache/ccache.conf
+
+    - name: 绑定 ccache 缓存
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ${{ runner.os }}-ccache-${{ hashFiles('configs/*.config', 'libwrt.sh') }}
+        restore-keys: |
+          ${{ runner.os }}-ccache-
+
+    - name: 克隆 OpenWrt 源代码
+      run: |
+        git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
+        echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
+        cd openwrt
+        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
+        echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
+        VERSION_KERNEL=$(grep -oP 'LINUX_KERNEL_HASH-\K[0-9]+\.[0-9]+\.[0-9]+' target/linux/generic/kernel-6.12 || echo "未知")
+        echo "VERSION_KERNEL=$VERSION_KERNEL" >> $GITHUB_ENV
+
+    - name: 绑定 dl 源码缓存
+      uses: actions/cache@v4
+      with:
+        path: openwrt/dl
+        key: ${{ runner.os }}-ipq60xx-dl-${{ hashFiles('configs/*.config') }}
+        restore-keys: |
+          ${{ runner.os }}-ipq60xx-dl-
+
+    - name: 更新并安装 feeds 核心扩展包
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: 设置 SSH 调试（可选）
+      if: github.event.inputs.ssh == 'true'
+      uses: mxschmitt/action-tmate@v3
+      with:
+        limit-access-to-actor: true
+
+    - name: 应用自定义配置并 DIY
+      run: |
+        if [ -d "$GITHUB_WORKSPACE/files" ]; then
+          mkdir -p "$GITHUB_WORKSPACE/openwrt/files"
+          cp -r "$GITHUB_WORKSPACE/files"/* "$GITHUB_WORKSPACE/openwrt/files/"
+        fi
+        
+        if [ ! -f "$GITHUB_WORKSPACE/$CONFIG_FILE" ]; then
+          echo "::error::找不到配置文件: $GITHUB_WORKSPACE/$CONFIG_FILE"
+          exit 1
+        fi
+        cp "$GITHUB_WORKSPACE/$CONFIG_FILE" "$GITHUB_WORKSPACE/openwrt/.config"
+        
+        cd "$GITHUB_WORKSPACE/openwrt"
+        if [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
+          chmod +x "$GITHUB_WORKSPACE/$DIY_SCRIPT"
+          "$GITHUB_WORKSPACE/$DIY_SCRIPT"
+        fi
+        
+        echo "CONFIG_CCACHE=y" >> .config
+        
+        DEVICE_LINE=$(grep '^CONFIG_TARGET_.*_DEVICE_.*=y' .config || true)
+        if [ -n "$DEVICE_LINE" ]; then
+          TARGET_STR=$(echo "$DEVICE_LINE" | sed -r 's/CONFIG_TARGET_(.*)_DEVICE_.*/\1/')
+          TARGET_SUBDIR=$(echo "$TARGET_STR" | tr '_' '/')
+          TARGET_NAME_STR=$(echo "$TARGET_STR" | tr '_' '-')
+          echo "DEVICE_SUBDIR=$TARGET_SUBDIR" >> $GITHUB_ENV
+          echo "DEVICE_NAME_STR=$TARGET_NAME_STR" >> $GITHUB_ENV
+        else
+          echo "DEVICE_SUBDIR=ipq60xx/generic" >> $GITHUB_ENV
+          echo "DEVICE_NAME_STR=ipq60xx-generic" >> $GITHUB_ENV
+        fi
+
+    - name: 整理并补全 .config 依赖
+      run: |
+        cd openwrt
+        yes "" | make oldconfig
+
+    - name: 下载软件包源码
+      if: github.event.inputs.skip_compile != 'true'
+      run: |
+        cd openwrt
+        make download -j8
+        find dl -name "*.badcheck" -delete
+
+    - name: 验证 .config 完整性
+      run: |
+        cd openwrt
+        if ! grep -q '^CONFIG_TARGET_.*_DEVICE_.*=y' .config; then
+          echo "::error::设备树节点异常，请核对配置架构！"
+          diff $GITHUB_WORKSPACE/$CONFIG_FILE .config || true
+          exit 1
+        fi
+
+    - name: 编译固件
+      if: github.event.inputs.skip_compile != 'true'
+      id: compile
+      run: |
+        cd openwrt
+        
+        echo "=== 穿透内核配置并精简体积 ==="
+        {
+          # --- Netfilter 补充选项 (解决内核交互报错) ---
+          echo "CONFIG_KERNEL_NETFILTER_INGRESS=y"
+          echo "CONFIG_KERNEL_NETFILTER_EGRESS=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK=m"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_HOOK=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_ACCT=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_QUEUE=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_LOG=n"
+          echo "CONFIG_KERNEL_NETFILTER_NETLINK_OSF=n"
+          echo "CONFIG_KERNEL_NF_CONNTRACK=m"
+          echo "CONFIG_KERNEL_NF_LOG_SYSLOG=m"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_MARK=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_ZONES=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_PROCFS=n"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_EVENTS=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_TIMEOUT=y"
+          echo "CONFIG_KERNEL_NF_CONNTRACK_DSCPREMARK_EXT=y"
+
+          # --- 关闭内核调试信息，立减 20~30 MB ---
+          echo "CONFIG_KERNEL_DEBUG_INFO=n"
+          echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n"
+          echo "CONFIG_KERNEL_DEBUG_KERNEL=n"
+          echo "CONFIG_KERNEL_DEBUG_FS=n"
+          echo "CONFIG_KERNEL_KALLSYMS=n"
+          echo "CONFIG_KERNEL_PERF_EVENTS=n"
+        } >> .config
+        
+        echo "=== 开始编译 ==="
+        yes "" | make -j$(nproc) || yes "" | make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: 检查磁盘使用
+      if: (!cancelled())
+      run: df -hT
+
+    - name: 上传 .config 配置文件
+      if: github.event.inputs.upload_config == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.SOURCE_REPO }}-config-${{ env.FILE_DATE }}
+        path: openwrt/.config
+        include-hidden-files: true
+
+    - name: 上传 bin 目录（可选）
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.SOURCE_REPO }}-bin-${{ env.FILE_DATE }}
+        path: openwrt/bin
+
+    - name: 整理固件与附加包
+      if: steps.compile.outputs.status == 'success'
+      run: |
+        cd openwrt/bin/targets/*/*
+        cat sha256sums
+        cp $OPENWRT_PATH/.config build.config
+        mkdir -p packages
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
+        tar -czf Packages.tar.gz packages 2>/dev/null || true
+        rm -rf packages feeds.buildinfo version.buildinfo 2>/dev/null || true
+        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+
+    - name: 上传固件到 Artifact（未发版 Release 时备用）
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_NAME_STR }}-${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE_PATH }}
+
+    - name: 自动发版到 GitHub Release
+      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+      uses: ncipollo/release-action@v1
+      with:
+        name: R${{ env.DATE }} for ${{ env.FIRMWARE_TAG }}
+        allowUpdates: true
+        tag: ${{ env.FIRMWARE_TAG }}
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.FIRMWARE_PATH }}/*
+        body: |
+          **This is OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}**
+          ### 📒 固件信息 (无Wi-Fi / 纯净有线 / 纯软转发)
+          - 💻 适用平台：${{ env.FIRMWARE_TAG }} (高通 IPQ60xx / 兆能 ZN-M2)
+          - ⚽ 固件源码：${{ env.REPO_URL }}
+          - 💝 源码分支：${{ env.REPO_BRANCH }}
+          - 🌐 默认后台：192.168.1.1
+          - 🔑 默认密码：password
+          ### 🧊 核心与组件版本
+          - 固件内核版本：${{ env.VERSION_KERNEL }}
+          - 底层源码最后更新记录：
+          ${{ env.VERSION_INFO }}
