@@ -139,35 +139,16 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    # --- SSH 调试（带公钥检查和容错） ---
-    - name: 检查 SSH 公钥
+    # ========== SSH 调试（无需预添加公钥） ==========
+    - name: 启动 SSH 调试（使用 token 自动创建临时密钥）
       if: github.event.inputs.ssh == 'true'
-      id: ssh_check
-      run: |
-        USER="${{ github.actor }}"
-        KEYS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/users/$USER/keys" | jq 'length')
-        if [ "$KEYS" -eq 0 ]; then
-          echo "::warning::GitHub 用户 $USER 没有注册 SSH 公钥，无法启用 SSH 调试。"
-          echo "ssh_available=false" >> $GITHUB_OUTPUT
-        else
-          echo "ssh_available=true" >> $GITHUB_OUTPUT
-        fi
-
-    - name: 启动 SSH 调试
-      if: github.event.inputs.ssh == 'true' && steps.ssh_check.outputs.ssh_available == 'true'
       uses: mxschmitt/action-tmate@v3
-      continue-on-error: true   # 即使失败也不中断后续步骤
+      continue-on-error: true
       with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
         limit-access-to-actor: true
 
-    - name: 提示 SSH 调试被跳过
-      if: github.event.inputs.ssh == 'true' && steps.ssh_check.outputs.ssh_available != 'true'
-      run: |
-        echo "⚠️ SSH 调试已跳过，因为没有找到 SSH 公钥。"
-        echo "   请前往 https://github.com/settings/keys 添加公钥后重新触发工作流。"
-
-    # --- 生成最终配置 ---
+    # ========== 生成最终配置 ==========
     - name: 生成最终配置
       run: |
         cd openwrt
