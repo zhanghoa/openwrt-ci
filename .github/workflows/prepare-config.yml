@@ -1,4 +1,4 @@
-name: Prepare Config via SSH (Manual)
+name: Prepare Config via SSH (Always)
 
 on:
   workflow_dispatch:
@@ -15,23 +15,18 @@ on:
           - immortalwrt-24.10
           - custom
       custom_repo_url:
-        description: '当选择 "custom" 时，请输入 Git 仓库 URL'
+        description: '自定义 Git 仓库 URL'
         required: false
         type: string
       custom_repo_branch:
-        description: '当选择 "custom" 时，请输入分支名'
+        description: '自定义分支名'
         required: false
         type: string
       diy_script:
-        description: '可选：在工作流中额外执行的脚本（如预置配置），留空则跳过'
+        description: '可选：SSH 前执行的脚本（位于仓库根目录）'
         required: false
         default: ''
         type: string
-      ssh_enabled:
-        description: '启用 SSH 手动配置（进入后请执行 make menuconfig 生成 .config）'
-        required: false
-        default: true
-        type: boolean
 
 env:
   TZ: Asia/Shanghai
@@ -39,7 +34,7 @@ env:
 jobs:
   Prepare-Config:
     runs-on: ubuntu-latest
-    timeout-minutes: 120   # 给手动操作留足时间
+    timeout-minutes: 120
 
     steps:
     - name: 清理磁盘空间
@@ -58,7 +53,7 @@ jobs:
           xz-utils zlib1g-dev dos2unix libfuse-dev
         sudo timedatectl set-timezone "$TZ"
 
-    - name: 检出工作流仓库（用于获取 DIY 脚本）
+    - name: 检出工作流仓库
       uses: actions/checkout@v4
 
     - name: 确定源码仓库和分支
@@ -69,7 +64,7 @@ jobs:
           REPO_URL="${{ github.event.inputs.custom_repo_url }}"
           REPO_BRANCH="${{ github.event.inputs.custom_repo_branch }}"
           if [ -z "$REPO_URL" ] || [ -z "$REPO_BRANCH" ]; then
-            echo "::error::自定义仓库时，必须同时提供 URL 和分支"
+            echo "::error::自定义仓库时必须同时提供 URL 和分支"
             exit 1
           fi
         else
@@ -83,7 +78,6 @@ jobs:
         fi
         echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV
         echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
-        echo "使用源码: $REPO_URL (分支: $REPO_BRANCH)"
 
     - name: 克隆源码
       run: |
@@ -105,35 +99,30 @@ jobs:
           cd openwrt
           $GITHUB_WORKSPACE/$DIY_SCRIPT
         else
-          echo "::warning::DIY 脚本 $DIY_SCRIPT 不存在，跳过"
+          echo "::warning::脚本 $DIY_SCRIPT 不存在，跳过"
         fi
 
-    # ---- SSH 手动配置 ----
-    - name: 启动 SSH 调试（手动运行 make menuconfig）
-      if: github.event.inputs.ssh_enabled == true
+    # ---------- 总是启动 SSH，无需任何勾选 ----------
+    - name: 启动 SSH 手动配置（请执行 make menuconfig）
       uses: mxschmitt/action-tmate@v3
       continue-on-error: true
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         limit-access-to-actor: true
 
-    # ---- SSH 结束后，检查 .config 并整理 ----
+    # ---------- SSH 退出后检查 .config ----------
     - name: 检查 .config 是否存在
       run: |
         if [ ! -f openwrt/.config ]; then
-          echo "::error::未找到 .config 文件，请确保在 SSH 中执行了 make menuconfig 并保存了配置！"
+          echo "::error::未找到 .config 文件！请在 SSH 中执行 'make menuconfig' 并保存配置。"
           exit 1
         fi
         echo "✅ .config 已生成，大小：$(du -h openwrt/.config | cut -f1)"
 
-    - name: 运行 make defconfig 整理依赖
+    - name: 整理配置并下载源码
       run: |
         cd openwrt
         yes "" | make defconfig
-
-    - name: 下载软件包源码
-      run: |
-        cd openwrt
         make download -j8
         find dl -name "*.badcheck" -delete
 
