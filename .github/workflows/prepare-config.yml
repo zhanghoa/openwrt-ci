@@ -1,4 +1,4 @@
-name: Prepare Config Only (No Build)
+name: Prepare Config via SSH (Manual)
 
 on:
   workflow_dispatch:
@@ -22,34 +22,15 @@ on:
         description: '当选择 "custom" 时，请输入分支名'
         required: false
         type: string
-      config_preset:
-        description: '选择预设配置（仓库 configs/ 目录下的文件）'
-        required: true
-        default: 'ipq60xx-6.12-nowifi-nss.config'
-        type: choice
-        options:
-          - ipq60xx-6.12-nowifi-nss.config
-          - ipq60xx-6.12-nowifi-nss-full.config
-          - ipq60xx-6.12-nowifi-nss-mini.config
-          - custom
-      custom_config_name:
-        description: '当选择 "custom" 时，请输入配置文件路径'
-        required: false
-        type: string
       diy_script:
-        description: '自定义脚本名称（留空则不执行）'
+        description: '可选：在工作流中额外执行的脚本（如预置配置），留空则跳过'
         required: false
-        default: 'libwrt.sh'
+        default: ''
         type: string
-      ssh:
-        description: '启用 SSH 调试（在 feeds 安装后、生成配置前进入）'
+      ssh_enabled:
+        description: '启用 SSH 手动配置（进入后请执行 make menuconfig 生成 .config）'
         required: false
-        default: 'false'
-        type: boolean
-      upload_config:
-        description: '上传生成的 .config 文件到 Artifact'
-        required: false
-        default: 'true'
+        default: true
         type: boolean
 
 env:
@@ -58,10 +39,10 @@ env:
 jobs:
   Prepare-Config:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120   # 给手动操作留足时间
 
     steps:
-    - name: 快速清理磁盘空间
+    - name: 清理磁盘空间
       run: |
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
         df -h
@@ -77,7 +58,7 @@ jobs:
           xz-utils zlib1g-dev dos2unix libfuse-dev
         sudo timedatectl set-timezone "$TZ"
 
-    - name: 检出工作流仓库
+    - name: 检出工作流仓库（用于获取 DIY 脚本）
       uses: actions/checkout@v4
 
     - name: 确定源码仓库和分支
@@ -109,79 +90,54 @@ jobs:
         git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
         echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
 
-    - name: 复制配置文件到源码目录
-      run: |
-        mkdir -p openwrt/configs
-        cp -r $GITHUB_WORKSPACE/configs/* openwrt/configs/ 2>/dev/null || echo "没有找到 configs 目录，跳过"
-
-    - name: 缓存 dl 目录
-      uses: actions/cache@v4
-      with:
-        path: openwrt/dl
-        key: ${{ runner.os }}-prepare-dl-${{ hashFiles('openwrt/configs/*.config') }}
-        restore-keys: |
-          ${{ runner.os }}-prepare-dl-
-
-    - name: 确定配置文件路径
-      id: config
-      run: |
-        if [ "${{ github.event.inputs.config_preset }}" == "custom" ]; then
-          CONFIG_FILE="${{ github.event.inputs.custom_config_name }}"
-        else
-          CONFIG_FILE="configs/${{ github.event.inputs.config_preset }}"
-        fi
-        echo "CONFIG_FILE=$CONFIG_FILE" >> $GITHUB_ENV
-        echo "使用配置文件: $CONFIG_FILE"
-
     - name: 更新并安装 feeds
       run: |
         cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    # ========== SSH 调试（无需预添加公钥） ==========
-    - name: 启动 SSH 调试（使用 token 自动创建临时密钥）
-      if: github.event.inputs.ssh == 'true'
+    - name: 执行 DIY 脚本（如果有）
+      if: github.event.inputs.diy_script != ''
+      run: |
+        DIY_SCRIPT="${{ github.event.inputs.diy_script }}"
+        if [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
+          chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
+          cd openwrt
+          $GITHUB_WORKSPACE/$DIY_SCRIPT
+        else
+          echo "::warning::DIY 脚本 $DIY_SCRIPT 不存在，跳过"
+        fi
+
+    # ---- SSH 手动配置 ----
+    - name: 启动 SSH 调试（手动运行 make menuconfig）
+      if: github.event.inputs.ssh_enabled == true
       uses: mxschmitt/action-tmate@v3
       continue-on-error: true
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         limit-access-to-actor: true
 
-    # ========== 生成最终配置 ==========
-    - name: 生成最终配置
+    # ---- SSH 结束后，检查 .config 并整理 ----
+    - name: 检查 .config 是否存在
       run: |
-        cd openwrt
-        if [ ! -f "$CONFIG_FILE" ]; then
-          echo "::error::找不到配置文件: $CONFIG_FILE"
-          ls -la openwrt/configs/ || echo "configs/ 目录为空"
+        if [ ! -f openwrt/.config ]; then
+          echo "::error::未找到 .config 文件，请确保在 SSH 中执行了 make menuconfig 并保存了配置！"
           exit 1
         fi
-        cp $CONFIG_FILE .config
+        echo "✅ .config 已生成，大小：$(du -h openwrt/.config | cut -f1)"
 
-        DIY_SCRIPT="${{ github.event.inputs.diy_script }}"
-        if [ -n "$DIY_SCRIPT" ] && [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
-          chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
-          $GITHUB_WORKSPACE/$DIY_SCRIPT
-        elif [ -n "$DIY_SCRIPT" ]; then
-          echo "::warning::DIY 脚本不存在: $DIY_SCRIPT"
-        fi
-
+    - name: 运行 make defconfig 整理依赖
+      run: |
+        cd openwrt
         yes "" | make defconfig
+
+    - name: 下载软件包源码
+      run: |
+        cd openwrt
         make download -j8
         find dl -name "*.badcheck" -delete
 
-    - name: 验证 .config
-      run: |
-        if [ ! -f openwrt/.config ]; then
-          echo "::error::.config 文件未生成！"
-          exit 1
-        fi
-        echo "✅ .config 大小：$(du -h openwrt/.config | cut -f1)"
-        head -n 10 openwrt/.config
-
     - name: 上传 .config 到 Artifact
-      if: github.event.inputs.upload_config == 'true' || github.event.inputs.ssh == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: config-${{ github.run_id }}-${{ github.run_attempt }}
