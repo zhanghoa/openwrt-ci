@@ -11,8 +11,8 @@ on:
         options:
           - openwrt-23.05
           - openwrt-24.10
-          - immortalwrt-23.05
           - immortalwrt-24.10
+          - immortalwrt-25.12
           - custom
       custom_repo_url:
         description: '自定义 Git 仓库 URL'
@@ -102,13 +102,11 @@ jobs:
           echo "::warning::脚本 $DIY_SCRIPT 不存在，跳过"
         fi
 
-    # ---------- 修正：使用免密直连模式的 tmate ----------
     - name: 启动 SSH 手动配置（请在终端执行 cd openwrt && make menuconfig）
       uses: mxschmitt/action-tmate@v3
       with:
         limit-access-to-actor: false
 
-    # ---------- SSH 退出后检查 .config ----------
     - name: 检查 .config 是否存在
       run: |
         if [ ! -f openwrt/.config ]; then
@@ -117,12 +115,11 @@ jobs:
         fi
         echo "✅ .config 已生成，大小：$(du -h openwrt/.config | cut -f1)"
 
-    - name: 整理配置并下载源码
+    # ---------- 核心精简：只整理配置，不下载源码 ----------
+    - name: 整理并校验配置
       run: |
         cd openwrt
         yes "" | make defconfig
-        make download -j8
-        find dl -name "*.badcheck" -delete
 
     - name: 上传 .config 到 Artifact
       uses: actions/upload-artifact@v4
