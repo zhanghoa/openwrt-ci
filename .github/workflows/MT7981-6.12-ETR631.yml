@@ -6,21 +6,21 @@ on:
   #   - cron: 0 19 * * *
 
 env:
-  # 使用 ImmortalWrt 官方源码（已合并复旦微闪存支持）
+  # 使用 ImmortalWrt 官方源码
   REPO_URL: https://github.com/immortalwrt/immortalwrt.git
-  REPO_BRANCH: openwrt-25.12          # 或 master 分支（更新）
+  REPO_BRANCH: openwrt-25.12
   
-  # 你需要自己准备一个适用于 MT7981 的 .config 文件（放在 configs/mt7981-eth.config）
+  # 配置文件存放路径，请确保你的 GitHub 仓库中有对应的目录和文件
   CONFIG_FILE: configs/mt7981-eth.config
   
-  # DIY 脚本（可选，你可以修改为针对 MT7981 的自定义命令）
+  # DIY 脚本
   DIY_SCRIPT: libwrt.sh
   
-  CLASH_KERNEL: amd64                 # 与编译无关，可保留
+  CLASH_KERNEL: amd64
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
   FIRMWARE_RELEASE: true
-  FIRMWARE_TAG: ETR631-MT7981         # 自定义标签
+  FIRMWARE_TAG: ETR631-MT7981
   TZ: Asia/Shanghai
 
 jobs:
@@ -47,8 +47,7 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-        sudo -E apt -yqq install dos2unix
-        sudo -E apt -yqq install libfuse-dev
+        sudo -E apt -yqq install dos2unix libfuse-dev
         sudo -E apt -yqq autoremove --purge
         sudo -E apt -yqq autoclean
         sudo -E apt -yqq clean
@@ -73,16 +72,18 @@ jobs:
         echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
         VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
         echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
-        VERSION_KERNEL=$(grep -oP 'LINUX_KERNEL_HASH-\K[0-9]+\.[0-9]+\.[0-9]+' target/linux/generic/kernel-6.12)
+        # 使用正则表达式动态提取内核版本，防止写死 6.12 导致目录寻找失败报错
+        VERSION_KERNEL=$(grep -shoP 'LINUX_KERNEL_HASH-\K[0-9]+\.[0-9]+\.[0-9]+' target/linux/generic/kernel-*/Makefile | head -n 1 || echo "unknown")
         echo "VERSION_KERNEL=$VERSION_KERNEL" >> $GITHUB_ENV
 
     - name: Generate Variables(生成变量)
       run: |
-        cp $CONFIG_FILE $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
-        make defconfig > /dev/null 2>&1
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        # 预加载配置文件以便提取设备架构信息（增加了文件存在性安全判断）
+        [ -e $GITHUB_WORKSPACE/$CONFIG_FILE ] && cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
+        make defconfig > /dev/null 2>&1
         DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
         echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
         DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
@@ -105,10 +106,15 @@ jobs:
     - name: Load Custom Configuration(加载自定义配置)
       run: |
         [ -e files ] && mv files $OPENWRT_PATH/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        chmod +x $DIY_SCRIPT
+        [ -e $GITHUB_WORKSPACE/$CONFIG_FILE ] && cp $GITHUB_WORKSPACE/$CONFIG_FILE $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
+        # 增加 DIY 脚本的存在性判断，即便仓库里没有放这个脚本也能安全跳过，不会红叉报错
+        if [ -e $GITHUB_WORKSPACE/$DIY_SCRIPT ]; then
+          chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
+          $GITHUB_WORKSPACE/$DIY_SCRIPT
+        else
+          echo "提示：DIY 脚本 ($DIY_SCRIPT) 不存在，已安全跳过执行。"
+        fi
 
     - name: Download DL Package(下载DL软件包)
       run: |
@@ -170,7 +176,7 @@ jobs:
         body: |
           **This is OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}**
           ### 📒 固件信息(适用于 MT7981 / ETR631)
-          - 基于 ImmortalWrt 24.10 源码，已集成复旦微闪存支持
+          - 基于 ImmortalWrt 源码编译
           - 💻 这是 ${{ env.FIRMWARE_TAG }} 平台使用的 OpenWrt 固件
           - ⚽ 固件源码: ${{ env.REPO_URL }}
           - 💝 源码分支: ${{ env.REPO_BRANCH }}
