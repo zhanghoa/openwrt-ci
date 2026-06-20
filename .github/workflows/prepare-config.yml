@@ -102,13 +102,11 @@ jobs:
           echo "::warning::脚本 $DIY_SCRIPT 不存在，跳过"
         fi
 
-    # ---------- 修正：使用 github-token（带连字符） ----------
-    - name: 启动 SSH 手动配置（请执行 make menuconfig）
+    # ---------- 修正：使用免密直连模式的 tmate ----------
+    - name: 启动 SSH 手动配置（请在终端执行 cd openwrt && make menuconfig）
       uses: mxschmitt/action-tmate@v3
-      continue-on-error: true
       with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        limit-access-to-actor: true
+        limit-access-to-actor: false
 
     # ---------- SSH 退出后检查 .config ----------
     - name: 检查 .config 是否存在
