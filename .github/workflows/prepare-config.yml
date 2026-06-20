@@ -102,12 +102,12 @@ jobs:
           echo "::warning::脚本 $DIY_SCRIPT 不存在，跳过"
         fi
 
-    # ---------- 总是启动 SSH，无需任何勾选 ----------
+    # ---------- 修正：使用 github-token（带连字符） ----------
     - name: 启动 SSH 手动配置（请执行 make menuconfig）
       uses: mxschmitt/action-tmate@v3
       continue-on-error: true
       with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
         limit-access-to-actor: true
 
     # ---------- SSH 退出后检查 .config ----------
