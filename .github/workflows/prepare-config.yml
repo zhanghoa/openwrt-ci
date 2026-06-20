@@ -3,8 +3,27 @@ name: Prepare Config Only (No Build)
 on:
   workflow_dispatch:
     inputs:
+      repo_preset:
+        description: '选择源码仓库预设'
+        required: true
+        default: 'immortalwrt-24.10'
+        type: choice
+        options:
+          - openwrt-23.05
+          - openwrt-24.10
+          - immortalwrt-23.05
+          - immortalwrt-24.10
+          - custom
+      custom_repo_url:
+        description: '当选择 "custom" 时，请输入 Git 仓库 URL（如 https://github.com/user/repo.git）'
+        required: false
+        type: string
+      custom_repo_branch:
+        description: '当选择 "custom" 时，请输入分支名（如 main）'
+        required: false
+        type: string
       config_preset:
-        description: '选择预设配置（仓库 configs/ 目录下的文件）'
+        description: '选择预设配置（工作流仓库 configs/ 目录下的文件）'
         required: true
         default: 'ipq60xx-6.12-nowifi-nss.config'
         type: choice
@@ -12,10 +31,15 @@ on:
           - ipq60xx-6.12-nowifi-nss.config
           - ipq60xx-6.12-nowifi-nss-full.config
           - ipq60xx-6.12-nowifi-nss-mini.config
-          - custom (手动输入文件名)
+          - custom
       custom_config_name:
         description: '当选择 "custom" 时，请输入配置文件路径（相对于仓库根目录，如 configs/my.config）'
         required: false
+        type: string
+      diy_script:
+        description: '自定义脚本名称（留空则不执行，例如 libwrt.sh）'
+        required: false
+        default: 'libwrt.sh'
         type: string
       ssh:
         description: '启用 SSH 调试（在 feeds 安装后、生成配置前进入）'
@@ -29,10 +53,10 @@ on:
         type: boolean
 
 env:
-  REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
-  REPO_BRANCH: main-nss
-  DIY_SCRIPT: libwrt.sh
   TZ: Asia/Shanghai
+  # 以下两个变量将在 steps 中动态设置
+  # REPO_URL:
+  # REPO_BRANCH:
 
 jobs:
   Prepare-Config:
@@ -60,10 +84,49 @@ jobs:
     - name: 检出工作流仓库（用于获取配置文件、DIY脚本等）
       uses: actions/checkout@v4
 
-    - name: 克隆 OpenWrt 源码
+    - name: 确定源码仓库和分支
+      id: repo
+      run: |
+        PRESET="${{ github.event.inputs.repo_preset }}"
+        if [ "$PRESET" == "custom" ]; then
+          REPO_URL="${{ github.event.inputs.custom_repo_url }}"
+          REPO_BRANCH="${{ github.event.inputs.custom_repo_branch }}"
+          if [ -z "$REPO_URL" ] || [ -z "$REPO_BRANCH" ]; then
+            echo "::error::自定义仓库时，必须同时提供 URL 和分支"
+            exit 1
+          fi
+        else
+          case "$PRESET" in
+            openwrt-23.05)
+              REPO_URL="https://github.com/openwrt/openwrt.git"
+              REPO_BRANCH="openwrt-23.05"
+              ;;
+            openwrt-24.10)
+              REPO_URL="https://github.com/openwrt/openwrt.git"
+              REPO_BRANCH="openwrt-24.10"
+              ;;
+            immortalwrt-23.05)
+              REPO_URL="https://github.com/immortalwrt/immortalwrt.git"
+              REPO_BRANCH="openwrt-23.05"
+              ;;
+            immortalwrt-24.10)
+              REPO_URL="https://github.com/immortalwrt/immortalwrt.git"
+              REPO_BRANCH="openwrt-24.10"
+              ;;
+            *)
+              echo "::error::未知预设: $PRESET"
+              exit 1
+              ;;
+          esac
+        fi
+        echo "REPO_URL=$REPO_URL" >> $GITHUB_ENV
+        echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
+        echo "使用源码: $REPO_URL (分支: $REPO_BRANCH)"
+
+    - name: 克隆 OpenWrt 源码（使用指定仓库）
       run: |
         git clone --depth 1 -b $REPO_BRANCH $REPO_URL openwrt
-        echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV   # 设置绝对路径变量
+        echo "OPENWRT_PATH=$PWD/openwrt" >> $GITHUB_ENV
 
     - name: 复制配置文件到源码目录
       run: |
@@ -120,10 +183,13 @@ jobs:
         cp $CONFIG_FILE .config
         
         # 如果有 DIY 脚本，执行它（可能修改 .config）
-        if [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
+        DIY_SCRIPT="${{ github.event.inputs.diy_script }}"
+        if [ -n "$DIY_SCRIPT" ] && [ -f "$GITHUB_WORKSPACE/$DIY_SCRIPT" ]; then
           echo "执行 DIY 脚本: $DIY_SCRIPT"
           chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
           $GITHUB_WORKSPACE/$DIY_SCRIPT
+        elif [ -n "$DIY_SCRIPT" ]; then
+          echo "::warning::指定的 DIY 脚本不存在: $DIY_SCRIPT"
         fi
         
         # 运行 defconfig 整理依赖关系
@@ -145,12 +211,12 @@ jobs:
         echo "--- 前 10 行预览 ---"
         head -n 10 openwrt/.config
 
-    # ---- 上传 .config 到 Artifact（使用绝对路径） ----
+    # ---- 上传 .config 到 Artifact ----
     - name: 上传 .config 到 Artifact
       if: github.event.inputs.upload_config == 'true' || github.event.inputs.ssh == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: config-${{ github.run_id }}-${{ github.run_attempt }}
-        path: ${{ env.OPENWRT_PATH }}/.config   # ✅ 修正为绝对路径
+        path: ${{ env.OPENWRT_PATH }}/.config
         include-hidden-files: true
         if-no-files-found: error
