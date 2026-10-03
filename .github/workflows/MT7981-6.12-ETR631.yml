@@ -2,8 +2,6 @@ name: MT7981-6.12-ETR631
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: 0 19 * * *
 
 env:
   # 使用 ImmortalWrt 官方源码
