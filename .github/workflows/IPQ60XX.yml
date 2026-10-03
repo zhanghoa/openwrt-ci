@@ -54,7 +54,7 @@ env:
 
 jobs:
   Build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       actions: write
@@ -63,7 +63,7 @@ jobs:
 
     steps:
     - name: 深度清理与释放磁盘空间
-      uses: jlumbroso/free-disk-space@main
+      uses: jlumbroso/free-disk-space@v2.0.0
       with:
         tool-cache: true
         android: true
@@ -74,7 +74,7 @@ jobs:
         swap-storage: true
 
     - name: 检出工作流仓库
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: 生成全局变量
       id: vars

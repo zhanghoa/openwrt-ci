@@ -5,7 +5,8 @@ on: workflow_dispatch
 jobs:
   build:
     name: Build ${{ matrix.arch }}-${{ matrix.sdk }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -16,11 +17,11 @@ jobs:
 
     steps:
       - name: Maximize build space & Add Swap
-        uses: easimon/maximize-build-space@master
+        uses: easimon/maximize-build-space@v10
         with:
           swap-size-mb: 16384 # 增加 16GB 的 Swap
           
-      - uses: actions/checkout@main
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Clone specific package
@@ -65,7 +66,7 @@ jobs:
           V: s
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.arch }}
           path: bin/packages/${{ matrix.arch }}/*/*.apk

@@ -28,12 +28,19 @@ on:
         default: ''
         type: string
 
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 env:
   TZ: Asia/Shanghai
 
 jobs:
   Prepare-Config:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
 
     steps:
@@ -54,7 +61,7 @@ jobs:
         sudo timedatectl set-timezone "$TZ"
 
     - name: 检出工作流仓库
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: 确定源码仓库和分支
       id: repo
