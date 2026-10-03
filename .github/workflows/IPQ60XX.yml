@@ -9,11 +9,10 @@ on:
       branch:
         description: '源码分支（内核/特性）'
         required: true
-        default: 'main-nss'
+        default: '25.12-nss'
         type: choice
         options:
-          - main-nss          # 6.12 内核 + NSS 加速（推荐）
-          - 24.10-6.12        # 24.10 分支 + 6.12 内核
+          - 25.12-nss          # ImmortalWrt 25.12 + NSS 加速（推荐，LiBwrt 唯一活跃分支）
       config:
         description: '目标配置文件（configs/ 目录）'
         required: true
@@ -44,7 +43,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
+  REPO_URL: https://github.com/LiBwrt/LibWrt.git
   DIY_SCRIPT: libwrt.sh
   CLASH_KERNEL: amd64
   CACHE_TOOLCHAIN: true
@@ -85,7 +84,7 @@ jobs:
         echo "CONFIG_FILE=configs/$CFG" >> $GITHUB_ENV
 
         CFGN=$(echo "$CFG" | sed -E 's/^ipq60xx-//; s/\.config$//' | tr 'a-z' 'A-Z')
-        if [ "$BRANCH" = "main-nss" ]; then
+        if [ "$BRANCH" = "25.12-nss" ]; then
           TAG="IPQ60XX-$CFGN"
         else
           BTAG=$(echo "$BRANCH" | tr 'a-z' 'A-Z')
