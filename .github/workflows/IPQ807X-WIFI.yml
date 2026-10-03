@@ -105,9 +105,13 @@ jobs:
       run: |
         git config --global user.name "OpenWrt Builder"
         git config --global user.email "buster-openwrt@ovvo.uk"
-        cp $PATCHES_FILE_1 $OPENWRT_PATH/feeds/luci
-        cd $OPENWRT_PATH/feeds/luci
-        git am 0001-show-soc-status-on-luci.patch
+        if [ -e "$PATCHES_FILE_1" ]; then
+          cp $PATCHES_FILE_1 $OPENWRT_PATH/feeds/luci
+          cd $OPENWRT_PATH/feeds/luci
+          git am 0001-show-soc-status-on-luci.patch
+        else
+          echo "提示: 补丁文件不存在（25.12-nss 已内置 SoC 状态显示），跳过"
+        fi
   
     - name: Load Custom Configuration(加载自定义配置)
       run: |
